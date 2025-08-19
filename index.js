@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
 const { createClient } = require("@supabase/supabase-js");
-const rateLimit = require("express-rate-limit"); // ✅ pakai require
+const rateLimit = require("express-rate-limit");
 
 const app = express();
 app.use(cors());
@@ -24,17 +24,15 @@ const mailer = nodemailer.createTransport({
   }
 });
 
-// 🔒 limiter umum (100 request / 15 menit per IP)
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  standardHeaders: true, // ✅ kirim info rate limit di response header
-  legacyHeaders: false,  // ❌ jangan pakai header lama
+  standardHeaders: true,
+  legacyHeaders: false, 
   message: { error: "Terlalu banyak request, coba lagi nanti" }
 });
 app.use(generalLimiter);
 
-// 🔒 limiter khusus OTP (3 request / 5 menit per IP)
 const otpLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 3,
@@ -43,9 +41,8 @@ const otpLimiter = rateLimit({
   message: { error: "Terlalu sering minta OTP, coba lagi nanti" }
 });
 
-// ✅ pakai otpLimiter hanya di endpoint OTP
 app.post("/auth/request-otp", otpLimiter, async (req, res) => {
-  // logic kirim OTP ke email
+
   res.json({ message: "OTP terkirim" });
 });
 
