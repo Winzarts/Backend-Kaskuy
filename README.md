@@ -29,5 +29,4 @@ Fitur utama backend ini antara lain:
    git clone https://github.com/username/kaskuy-backend.git
    cd kaskuy-backend
 
-**INSTAL DEPENDENCY**
 npm install
