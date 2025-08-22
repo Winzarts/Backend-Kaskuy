@@ -4,6 +4,7 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const { createClient } = require("@supabase/supabase-js");
 const rateLimit = require("express-rate-limit");
+import multer from "multer";
 
 const app = express();
 app.use(cors());
@@ -40,6 +41,8 @@ const otpLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Terlalu sering minta OTP, coba lagi nanti" }
 });
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 app.post("/auth/request-otp", otpLimiter, async (req, res) => {
 
