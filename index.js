@@ -262,6 +262,35 @@ app.put("/admin-requests/:request_id", async (req, res) => {
   }
 });
 
+app.post("/upload-avatar", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    const fileExt = path.extname(file.originalname);
+    const fileName = `${Date.now()}${fileExt}`; // nama unik
+    const filePath = `avatars/${fileName}`;
+
+    // upload ke supabase storage
+    const { data, error } = await supabase.storage
+      .from("avatars")
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype,
+        upsert: true,
+      });
+
+    if (error) throw error;
+
+    // ambil URL public
+    const { data: publicUrl } = supabase.storage
+      .from("avatars")
+      .getPublicUrl(filePath);
+
+    res.json({ url: publicUrl.publicUrl });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Upload gagal" });
+  }
+});
+
 const PORT = Number(process.env.PORT || 5000);
 app.listen(PORT, () => {
   console.log(`✅ API ready at http://localhost:${PORT}`);
