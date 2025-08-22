@@ -4,7 +4,7 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const { createClient } = require("@supabase/supabase-js");
 const rateLimit = require("express-rate-limit");
-import multer from "multer";
+const multer = require("multer");
 
 const app = express();
 app.use(cors());
