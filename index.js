@@ -95,6 +95,41 @@ app.post("/login", async (req, res) => {
   }
 });
 
+app.get("/auth/google", async (req, res) => {
+  try {
+    const redirectTo = "https://backend-kaskuy-production.up.railway.app/auth/google/callback"; // ganti sesuai domain backend kamu
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo, // ke callback kita
+      },
+    });
+
+    app.get("/auth/google/callback", async (req, res) => {
+  try {
+    const { code } = req.query;
+    if (!code) return res.status(400).json({ success: false, message: "No code provided" });
+
+    // Tukar code jadi session di Supabase
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+
+    if (error) throw error;
+
+    // Data user Google + session
+    res.json({ success: true, user: data.user, session: data.session });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+    if (error) throw error;
+
+    res.redirect(data.url); // arahkan user ke Google login page
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
 app.get("/kelas", async (_req, res) => {
   try {
     const { data, error } = await supabase.from("kelas").select("*").order("nama_kelas");
