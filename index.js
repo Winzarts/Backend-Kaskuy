@@ -283,37 +283,38 @@ app.get("/auth/google/callback", async (req, res) => {
     const { code } = req.query;
     if (!code) return res.status(400).json({ success: false, message: "No code provided" });
 
-    // Tukar code jadi session di Supabase
     const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-
     if (error) throw error;
 
-    // Cek atau buat user profile
     const user_id = data.user.id;
     const email = data.user.email;
-    const full_name = data.user.user_metadata?.full_name || data.user.user_metadata?.name || 'User';
+    const full_name = data.user.user_metadata?.full_name || data.user.user_metadata?.name || null;
 
-    // Cek apakah user profile sudah ada
+    // cek profile
     const { data: existingProfile } = await supabase
       .from("user_profiles")
       .select("*")
       .eq("id", user_id)
-      .single();
+      .maybeSingle();
+
+    let redirectUrl;
 
     if (!existingProfile) {
-      // Buat profile baru untuk user Google
-      await supabase
-        .from("user_profiles")
-        .insert([{ 
-          id: user_id, 
-          full_name, 
-          role: "user" 
-        }]);
+      // profile belum ada → arahkan ke CompleteProfile
+      await supabase.from("user_profiles").insert([
+        { id: user_id, full_name, role: "user" }
+      ]);
+
+      redirectUrl = `${process.env.FRONTEND_URL}/complete-profile?access_token=${data.session.access_token}&refresh_token=${data.session.refresh_token}`;
+    } else if (!existingProfile.class || !existingProfile.absen_number) {
+      // profile ada tapi belum lengkap
+      redirectUrl = `${process.env.FRONTEND_URL}/complete-profile?access_token=${data.session.access_token}&refresh_token=${data.session.refresh_token}`;
+    } else {
+      // profile lengkap → langsung ke dashboard
+      redirectUrl = `${process.env.FRONTEND_URL}/dashboard?access_token=${data.session.access_token}&refresh_token=${data.session.refresh_token}`;
     }
 
-    // Redirect ke frontend dengan session data
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-    res.redirect(`${frontendUrl}/auth/callback?access_token=${data.session.access_token}&refresh_token=${data.session.refresh_token}`);
+    res.redirect(redirectUrl);
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
   }
