@@ -306,7 +306,7 @@ app.get("/auth/google/callback", async (req, res) => {
       ]);
 
       redirectUrl = `${process.env.FRONTEND_URL}/complete-profile?access_token=${data.session.access_token}&refresh_token=${data.session.refresh_token}`;
-    } else if (!existingProfile.class || !existingProfile.absen_number) {
+    } else if (!existingProfile.kelas_id || !existingProfile.absen) {
       // profile ada tapi belum lengkap
       redirectUrl = `${process.env.FRONTEND_URL}/complete-profile?access_token=${data.session.access_token}&refresh_token=${data.session.refresh_token}`;
     } else {
