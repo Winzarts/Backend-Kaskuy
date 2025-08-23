@@ -399,6 +399,25 @@ app.get("/pengeluaran", async (req, res) => {
   }
 });
 
+app.get("/members", async (req, res) => {
+  try {
+    const { kelas_id } = req.query;
+    if (!kelas_id) {
+      return res.status(400).json({ error: "kelas_id wajib" });
+    }
+
+    const { data, error } = await supabase
+      .rpc("get_members_with_total", { kelas: kelas_id });
+
+    if (error) return res.status(400).json({ error: error.message });
+    res.json(data);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
+
 app.post("/admin-requests", async (req, res) => {
   try {
     const { user_id, kelas_id } = req.body;
