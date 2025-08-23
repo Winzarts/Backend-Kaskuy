@@ -5,6 +5,7 @@ const nodemailer = require("nodemailer");
 const { createClient } = require("@supabase/supabase-js");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
+const path = require("path"); // tambahan untuk upload avatar
 
 const app = express();
 app.use(cors());
@@ -44,9 +45,172 @@ const otpLimiter = rateLimit({
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// PERBAIKAN: Implementasi OTP request yang lengkap
 app.post("/auth/request-otp", otpLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Email wajib diisi" });
+    }
 
-  res.json({ message: "OTP terkirim" });
+    // Generate OTP 6 digit
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 menit
+
+    // Simpan OTP ke database
+    const { error: insertError } = await supabase
+      .from("otp_codes")
+      .upsert([
+        {
+          email,
+          otp_code: otp,
+          expires_at: expiresAt.toISOString(),
+          used: false
+        }
+      ], { 
+        onConflict: 'email',
+        ignoreDuplicates: false 
+      });
+
+    if (insertError) {
+      console.error("Error saving OTP:", insertError);
+      return res.status(500).json({ error: "Gagal menyimpan OTP" });
+    }
+
+    // Kirim OTP via email
+    try {
+      await mailer.sendMail({
+        from: `"Kas Sekolah App" <${process.env.SMTP_USER}>`,
+        to: email,
+        subject: "Kode OTP Login - Kas Sekolah",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Kode Verifikasi OTP</h2>
+            <p>Halo,</p>
+            <p>Kode OTP untuk login ke aplikasi Kas Sekolah:</p>
+            <div style="background: #f0f0f0; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 3px; margin: 20px 0;">
+              ${otp}
+            </div>
+            <p><strong>Kode ini berlaku selama 5 menit.</strong></p>
+            <p>Jika Anda tidak meminta kode ini, abaikan email ini.</p>
+            <br>
+            <p>Terima kasih,<br>Tim Kas Sekolah</p>
+          </div>
+        `
+      });
+
+      res.json({ 
+        message: "OTP berhasil dikirim ke email Anda",
+        email: email 
+      });
+
+    } catch (mailError) {
+      console.error("Error sending email:", mailError);
+      return res.status(500).json({ error: "Gagal mengirim email OTP" });
+    }
+
+  } catch (error) {
+    console.error("Error in request-otp:", error);
+    res.status(500).json({ error: "Terjadi kesalahan server" });
+  }
+});
+
+// TAMBAHAN: Endpoint untuk verifikasi OTP
+app.post("/auth/verify-otp", async (req, res) => {
+  try {
+    const { email, otp_code, password, full_name, kelas_id, absen } = req.body;
+    
+    if (!email || !otp_code) {
+      return res.status(400).json({ error: "Email dan kode OTP wajib diisi" });
+    }
+
+    // Cek OTP dari database
+    const { data: otpData, error: otpError } = await supabase
+      .from("otp_codes")
+      .select("*")
+      .eq("email", email)
+      .eq("otp_code", otp_code)
+      .eq("used", false)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (otpError || !otpData) {
+      return res.status(400).json({ error: "Kode OTP tidak valid atau sudah digunakan" });
+    }
+
+    // Cek apakah OTP sudah expired
+    if (new Date() > new Date(otpData.expires_at)) {
+      return res.status(400).json({ error: "Kode OTP sudah kadaluarsa" });
+    }
+
+    // Mark OTP as used
+    await supabase
+      .from("otp_codes")
+      .update({ used: true })
+      .eq("id", otpData.id);
+
+    // Jika ini untuk registrasi (ada password), buat user baru
+    if (password && full_name) {
+      const { data: created, error: authErr } = await supabase.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true
+      });
+      
+      if (authErr) return res.status(400).json({ error: authErr.message });
+
+      const user_id = created.user.id;
+
+      const { error: profErr } = await supabase
+        .from("user_profiles")
+        .insert([{ 
+          id: user_id, 
+          full_name, 
+          kelas_id: kelas_id || null, 
+          absen, 
+          role: "user" 
+        }]);
+        
+      if (profErr) return res.status(400).json({ error: profErr.message });
+
+      return res.json({ 
+        message: "Registrasi berhasil, silakan login dengan email dan password",
+        user_id 
+      });
+    } else {
+      // Untuk login dengan OTP, generate session
+      const { data, error } = await supabase.auth.admin.generateLink({
+        type: 'magiclink',
+        email: email
+      });
+
+      if (error) {
+        // Fallback: cek user yang sudah ada
+        const { data: existingUser } = await supabase
+          .from("user_profiles")
+          .select("id, full_name, role, kelas_id, absen")
+          .eq("id", (await supabase.auth.admin.listUsers()).data.users.find(u => u.email === email)?.id)
+          .single();
+
+        return res.json({ 
+          message: "OTP verified, login berhasil",
+          user: existingUser,
+          verified: true
+        });
+      }
+
+      return res.json({ 
+        message: "OTP verified, login berhasil",
+        access_token: data.properties?.access_token,
+        user: data.user
+      });
+    }
+
+  } catch (error) {
+    console.error("Error in verify-otp:", error);
+    res.status(500).json({ error: "Terjadi kesalahan server" });
+  }
 });
 
 app.get("/", (req, res) => {
@@ -87,7 +251,6 @@ app.post("/login", async (req, res) => {
     const { email, password } = req.body;
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return res.status(400).json({ error: error.message });
-    // kirim session ke frontend (access_token, refresh_token)
     return res.json({ session: data.session, user: data.user });
   } catch (e) {
     console.error(e);
@@ -95,17 +258,27 @@ app.post("/login", async (req, res) => {
   }
 });
 
+// PERBAIKAN: Google Auth - struktur yang benar
 app.get("/auth/google", async (req, res) => {
   try {
-    const redirectTo = "https://backend-kaskuy-production.up.railway.app/auth/google/callback"; // ganti sesuai domain backend kamu
+    const redirectTo = "https://backend-kaskuy-production.up.railway.app/auth/google/callback";
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo, // ke callback kita
+        redirectTo,
       },
     });
 
-    app.get("/auth/google/callback", async (req, res) => {
+    if (error) throw error;
+
+    res.redirect(data.url);
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
+// PERBAIKAN: Google callback - pindahkan keluar dari endpoint atas
+app.get("/auth/google/callback", async (req, res) => {
   try {
     const { code } = req.query;
     if (!code) return res.status(400).json({ success: false, message: "No code provided" });
@@ -115,16 +288,32 @@ app.get("/auth/google", async (req, res) => {
 
     if (error) throw error;
 
-    // Data user Google + session
-    res.json({ success: true, user: data.user, session: data.session });
-  } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  }
-});
+    // Cek atau buat user profile
+    const user_id = data.user.id;
+    const email = data.user.email;
+    const full_name = data.user.user_metadata?.full_name || data.user.user_metadata?.name || 'User';
 
-    if (error) throw error;
+    // Cek apakah user profile sudah ada
+    const { data: existingProfile } = await supabase
+      .from("user_profiles")
+      .select("*")
+      .eq("id", user_id)
+      .single();
 
-    res.redirect(data.url); // arahkan user ke Google login page
+    if (!existingProfile) {
+      // Buat profile baru untuk user Google
+      await supabase
+        .from("user_profiles")
+        .insert([{ 
+          id: user_id, 
+          full_name, 
+          role: "user" 
+        }]);
+    }
+
+    // Redirect ke frontend dengan session data
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    res.redirect(`${frontendUrl}/auth/callback?access_token=${data.session.access_token}&refresh_token=${data.session.refresh_token}`);
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
   }
@@ -303,8 +492,12 @@ app.put("/admin-requests/:request_id", async (req, res) => {
 app.post("/upload-avatar", upload.single("file"), async (req, res) => {
   try {
     const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: "File tidak ditemukan" });
+    }
+
     const fileExt = path.extname(file.originalname);
-    const fileName = `${Date.now()}${fileExt}`; // nama unik
+    const fileName = `${Date.now()}${fileExt}`;
     const filePath = `avatars/${fileName}`;
 
     // upload ke supabase storage
