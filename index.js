@@ -13,7 +13,7 @@ app.use(express.json());
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY?.length
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 const mailer = nodemailer.createTransport({
