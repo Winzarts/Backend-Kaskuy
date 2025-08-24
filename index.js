@@ -113,13 +113,16 @@ app.post("/verify-otp", async (req, res) => {
     }
 
     // buat user di Supabase Auth
-    const { data: created, error: authErr } =
-      await supabase.auth.admin.createUser({
-        email: pending.email,
-        password: pending.password,
-        email_confirm: true,
-      });
-    if (authErr) return res.status(400).json({ error: authErr.message });
+    const { data: created, error: authErr } = await supabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true
+    });
+    
+    if (authErr) {
+      console.error("Supabase createUser error:", authErr);
+      return res.status(400).json({ error: authErr.message });
+    }
 
     const user_id = created.user.id;
 
