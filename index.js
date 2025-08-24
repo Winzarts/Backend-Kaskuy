@@ -146,7 +146,10 @@ app.post("/auth/verify-otp", async (req, res) => {
     return res.json({ message: "Registrasi berhasil", user: userData.user });
   } catch (err) {
     console.error("Verify OTP error:", err.message);
-    return res.status(500).json({ error: "Gagal ver
+    return res.status(500).json({ error: "Gagal verifikasi OTP" });
+  }
+});
+
 
 
 app.get("/", (req, res) => {
