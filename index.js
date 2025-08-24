@@ -45,86 +45,54 @@ const otpLimiter = rateLimit({
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// PERBAIKAN: Implementasi OTP request yang lengkap
-app.post("/auth/request-otp", otpLimiter, async (req, res) => {
+app.post("/auth/request-otp", async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: "Email wajib diisi" });
     }
 
-    // Generate OTP 6 digit
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 menit
 
-    // Simpan OTP ke database
     const { error: insertError } = await supabase
       .from("otp_codes")
-      .upsert([
+      .insert([
         {
           email,
           otp_code: otp,
           expires_at: expiresAt.toISOString(),
-          used: false
-        }
-      ], { 
-        onConflict: 'email',
-        ignoreDuplicates: false 
-      });
+          used: false,
+        },
+      ]);
 
-    if (insertError) {
-      console.error("Error saving OTP:", insertError);
-      return res.status(500).json({ error: "Gagal menyimpan OTP" });
-    }
+    if (insertError) throw insertError;
 
-    // Kirim OTP via email
-    try {
-      await mailer.sendMail({
-        from: `"Kas Sekolah App" <${process.env.SMTP_USER}>`,
-        to: email,
-        subject: "Kode OTP Login - Kas Sekolah",
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Kode Verifikasi OTP</h2>
-            <p>Halo,</p>
-            <p>Kode OTP untuk login ke aplikasi Kas Sekolah:</p>
-            <div style="background: #f0f0f0; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 3px; margin: 20px 0;">
-              ${otp}
-            </div>
-            <p><strong>Kode ini berlaku selama 5 menit.</strong></p>
-            <p>Jika Anda tidak meminta kode ini, abaikan email ini.</p>
-            <br>
-            <p>Terima kasih,<br>Tim Kas Sekolah</p>
-          </div>
-        `
-      });
+    // Kirim email OTP (gunakan transporter Nodemailer)
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: "Kode OTP Verifikasi",
+      text: `Kode OTP kamu adalah: ${otp}. Berlaku 5 menit.`,
+    });
 
-      res.json({ 
-        message: "OTP berhasil dikirim ke email Anda",
-        email: email 
-      });
-
-    } catch (mailError) {
-      console.error("Error sending email:", mailError);
-      return res.status(500).json({ error: "Gagal mengirim email OTP" });
-    }
-
-  } catch (error) {
-    console.error("Error in request-otp:", error);
-    res.status(500).json({ error: "Terjadi kesalahan server" });
+    return res.json({ message: "OTP sudah dikirim ke email" });
+  } catch (err) {
+    console.error("OTP request error:", err.message);
+    return res.status(500).json({ error: "Gagal membuat OTP" });
   }
 });
 
-// TAMBAHAN: Endpoint untuk verifikasi OTP
+
 app.post("/auth/verify-otp", async (req, res) => {
   try {
-    const { email, otp_code, password, full_name, kelas_id, absen } = req.body;
-    
+    const { email, otp_code, full_name } = req.body;
+
     if (!email || !otp_code) {
-      return res.status(400).json({ error: "Email dan kode OTP wajib diisi" });
+      return res.status(400).json({ error: "Email dan OTP wajib diisi" });
     }
 
-    // Cek OTP dari database
+    // Cari OTP terbaru yang masih aktif
     const { data: otpData, error: otpError } = await supabase
       .from("otp_codes")
       .select("*")
@@ -136,82 +104,50 @@ app.post("/auth/verify-otp", async (req, res) => {
       .single();
 
     if (otpError || !otpData) {
-      return res.status(400).json({ error: "Kode OTP tidak valid atau sudah digunakan" });
+      return res.status(400).json({ error: "OTP tidak valid" });
     }
 
-    // Cek apakah OTP sudah expired
-    if (new Date() > new Date(otpData.expires_at)) {
-      return res.status(400).json({ error: "Kode OTP sudah kadaluarsa" });
+    // Cek kadaluarsa
+    if (new Date(otpData.expires_at) < new Date()) {
+      return res.status(400).json({ error: "OTP sudah kadaluarsa" });
     }
 
-    // Mark OTP as used
+    // Tandai OTP sudah digunakan
     await supabase
       .from("otp_codes")
       .update({ used: true })
       .eq("id", otpData.id);
 
-    // Jika ini untuk registrasi (ada password), buat user baru
-    if (password && full_name) {
-      const { data: created, error: authErr } = await supabase.auth.admin.createUser({
+    // Buat user baru di Supabase Auth
+    const { data: userData, error: userError } =
+      await supabase.auth.admin.createUser({
         email,
-        password,
-        email_confirm: true
-      });
-      
-      if (authErr) return res.status(400).json({ error: authErr.message });
-
-      const user_id = created.user.id;
-
-      const { error: profErr } = await supabase
-        .from("user_profiles")
-        .insert([{ 
-          id: user_id, 
-          full_name, 
-          kelas_id: kelas_id || null, 
-          absen, 
-          role: "user" 
-        }]);
-        
-      if (profErr) return res.status(400).json({ error: profErr.message });
-
-      return res.json({ 
-        message: "Registrasi berhasil, silakan login dengan email dan password",
-        user_id 
-      });
-    } else {
-      // Untuk login dengan OTP, generate session
-      const { data, error } = await supabase.auth.admin.generateLink({
-        type: 'magiclink',
-        email: email
+        email_confirm: true,
+        user_metadata: { full_name },
       });
 
-      if (error) {
-        // Fallback: cek user yang sudah ada
-        const { data: existingUser } = await supabase
-          .from("user_profiles")
-          .select("id, full_name, role, kelas_id, absen")
-          .eq("id", (await supabase.auth.admin.listUsers()).data.users.find(u => u.email === email)?.id)
-          .single();
+    if (userError) throw userError;
 
-        return res.json({ 
-          message: "OTP verified, login berhasil",
-          user: existingUser,
-          verified: true
-        });
-      }
+    // Simpan ke tabel `user_profiles`
+    const { error: profileError } = await supabase
+      .from("user_profiles")
+      .insert([
+        {
+          id: userData.user.id,
+          full_name: full_name || email.split("@")[0],
+          email: email,
+          absen: null,
+          kelas_id: null,
+        },
+      ]);
 
-      return res.json({ 
-        message: "OTP verified, login berhasil",
-        access_token: data.properties?.access_token,
-        user: data.user
-      });
-    }
+    if (profileError) throw profileError;
 
-  } catch (error) {
-    console.error("Error in verify-otp:", error);
-    res.status(500).json({ error: "Terjadi kesalahan server" });
-  }
-});
+    return res.json({ message: "Registrasi berhasil", user: userData.user });
+  } catch (err) {
+    console.error("Verify OTP error:", err.message);
+    return res.status(500).json({ error: "Gagal ver
+
 
 app.get("/", (req, res) => {
   res.json({ ok: true, service: "kas-backend", now: new Date().toISOString() });
