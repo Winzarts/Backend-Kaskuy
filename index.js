@@ -45,113 +45,6 @@ const otpLimiter = rateLimit({
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-app.post("/auth/request-otp", async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: "Email wajib diisi" });
-    }
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 menit
-
-    const { error: insertError } = await supabase
-      .from("otp_codes")
-      .insert([
-        {
-          email,
-          otp_code: otp,
-          expires_at: expiresAt.toISOString(),
-          used: false,
-        },
-      ]);
-
-    if (insertError) throw insertError;
-
-    // Kirim email OTP (gunakan transporter Nodemailer)
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: "Kode OTP Verifikasi",
-      text: `Kode OTP kamu adalah: ${otp}. Berlaku 5 menit.`,
-    });
-
-    return res.json({ message: "OTP sudah dikirim ke email" });
-  } catch (err) {
-    console.error("OTP request error:", err.message);
-    return res.status(500).json({ error: "Gagal membuat OTP" });
-  }
-});
-
-
-app.post("/auth/verify-otp", async (req, res) => {
-  try {
-    const { email, otp_code, full_name } = req.body;
-
-    if (!email || !otp_code) {
-      return res.status(400).json({ error: "Email dan OTP wajib diisi" });
-    }
-
-    // Cari OTP terbaru yang masih aktif
-    const { data: otpData, error: otpError } = await supabase
-      .from("otp_codes")
-      .select("*")
-      .eq("email", email)
-      .eq("otp_code", otp_code)
-      .eq("used", false)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-
-    if (otpError || !otpData) {
-      return res.status(400).json({ error: "OTP tidak valid" });
-    }
-
-    // Cek kadaluarsa
-    if (new Date(otpData.expires_at) < new Date()) {
-      return res.status(400).json({ error: "OTP sudah kadaluarsa" });
-    }
-
-    // Tandai OTP sudah digunakan
-    await supabase
-      .from("otp_codes")
-      .update({ used: true })
-      .eq("id", otpData.id);
-
-    // Buat user baru di Supabase Auth
-    const { data: userData, error: userError } =
-      await supabase.auth.admin.createUser({
-        email,
-        email_confirm: true,
-        user_metadata: { full_name },
-      });
-
-    if (userError) throw userError;
-
-    // Simpan ke tabel `user_profiles`
-    const { error: profileError } = await supabase
-      .from("user_profiles")
-      .insert([
-        {
-          id: userData.user.id,
-          full_name: full_name || email.split("@")[0],
-          email: email,
-          absen: null,
-          kelas_id: null,
-        },
-      ]);
-
-    if (profileError) throw profileError;
-
-    return res.json({ message: "Registrasi berhasil", user: userData.user });
-  } catch (err) {
-    console.error("Verify OTP error:", err.message);
-    return res.status(500).json({ error: "Gagal verifikasi OTP" });
-  }
-});
-
-
-
 app.get("/", (req, res) => {
   res.json({ ok: true, service: "kas-backend", now: new Date().toISOString() });
 });
@@ -160,28 +53,97 @@ app.post("/register", async (req, res) => {
   try {
     const { email, password, full_name, kelas_id, absen } = req.body;
     if (!email || !password || !full_name) {
-      return res.status(400).json({ error: "email, password, full_name wajib" });
+      return res.status(400).json({ error: "Email, password, full_name wajib" });
     }
 
+    // generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 menit
+
+    // simpan ke pending_users
+    const { error: insertErr } = await supabase
+      .from("pending_users")
+      .upsert([
+        {
+          email,
+          password,
+          full_name,
+          kelas_id: kelas_id || null,
+          absen,
+          otp_code: otp,
+          expires_at: expiresAt.toISOString(),
+          verified: false,
+        },
+      ]);
+
+    if (insertErr) throw insertErr;
+
+    // kirim OTP via email
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: "Kode OTP Verifikasi",
+      text: `Kode OTP kamu adalah: ${otp}. Berlaku 5 menit.`,
+    });
+
+    return res.json({ message: "OTP sudah dikirim ke email" });
+  } catch (e) {
+    console.error("Register error:", e.message);
+    res.status(500).json({ error: "Gagal register" });
+  }
+});
+
+app.post("/verify-otp", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ error: "Email & OTP wajib" });
+
+    // cek OTP di pending_users
+    const { data: pending, error: selErr } = await supabase
+      .from("pending_users")
+      .select("*")
+      .eq("email", email)
+      .single();
+
+    if (selErr || !pending) return res.status(400).json({ error: "User tidak ditemukan" });
+    if (pending.verified) return res.status(400).json({ error: "Sudah diverifikasi" });
+    if (pending.otp_code !== otp) return res.status(400).json({ error: "OTP salah" });
+    if (new Date(pending.expires_at) < new Date()) {
+      return res.status(400).json({ error: "OTP kadaluarsa" });
+    }
+
+    // buat user di Supabase Auth
     const { data: created, error: authErr } =
       await supabase.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true
+        email: pending.email,
+        password: pending.password,
+        email_confirm: true,
       });
     if (authErr) return res.status(400).json({ error: authErr.message });
 
     const user_id = created.user.id;
 
+    // masukkan ke user_profiles
     const { error: profErr } = await supabase
       .from("user_profiles")
-      .insert([{ id: user_id, full_name, kelas_id: kelas_id || null, absen, role: "user" }]);
+      .insert([
+        {
+          id: user_id,
+          full_name: pending.full_name,
+          kelas_id: pending.kelas_id,
+          absen: pending.absen,
+          role: "user",
+        },
+      ]);
     if (profErr) return res.status(400).json({ error: profErr.message });
 
-    return res.json({ message: "register ok", user_id });
+    // update pending_users jadi verified (atau hapus sekalian)
+    await supabase.from("pending_users").delete().eq("email", email);
+
+    return res.json({ message: "Akun berhasil dibuat", user_id });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "internal error" });
+    console.error("Verify OTP error:", e.message);
+    res.status(500).json({ error: "Gagal verifikasi OTP" });
   }
 });
 
