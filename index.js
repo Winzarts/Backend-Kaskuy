@@ -462,6 +462,44 @@ app.post("/admin-requests", async (req, res) => {
   }
 });
 
+app.get("/profile/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+      .from("user_profiles")
+      .select("id, full_name, email, photo, role, absen, kelas_id")
+      .eq("id", id)
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json(data);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
+app.put("/profile/update", async (req, res) => {
+  try {
+    const { id, full_name, email, photo } = req.body;
+    if (!id) return res.status(400).json({ error: "User ID wajib" });
+
+    const { error } = await supabase
+      .from("user_profiles")
+      .update({ full_name, email, photo })
+      .eq("id", id);
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.json({ success: true, message: "Profil berhasil diperbarui" });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "internal error" });
+  }
+});
+
 app.get("/admin-requests", async (_req, res) => {
   try {
     const { data, error } = await supabase
